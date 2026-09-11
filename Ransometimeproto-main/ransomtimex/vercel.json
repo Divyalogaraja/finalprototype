@@ -1,6 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm --prefix frontend install && npm --prefix frontend run build && node scripts/vercel-copy-frontend.mjs",
+  "framework": "fastapi",
+  "buildCommand": "npm --prefix frontend install && npm --prefix frontend run build",
+  "outputDirectory": null,
   "functions": {
     "app.py": {
       "maxDuration": 60
