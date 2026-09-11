@@ -1,0 +1,9 @@
+{
+  "name": "ransomtimex",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Vercel project root orchestrator. The Vite app lives in ./frontend.",
+  "scripts": {
+    "build": "npm --prefix frontend install && npm --prefix frontend run build && node scripts/vercel-copy-frontend.mjs"
+  }
+}
