@@ -101,10 +101,10 @@ function RealityCard({ title, o, color, note, highlight }) {
 function PredictionVsReality() {
   const { state } = useSim()
   const live = state.live || {}
-  const predicted = live.prediction?.predicted || 'FILE-SRV-01'
-  const confidence = live.prediction?.confidence || 91
-  const actual = live.compromised?.includes(predicted) ? predicted : (live.attacker_position || 'FILE-SRV-01')
-  const correct = true
+  const predicted = live.prediction?.predicted || '—'
+  const confidence = live.prediction?.confidence || 0
+  const actual = live.compromised?.includes(predicted) ? predicted : (live.attacker_position || live.compromised?.[live.compromised.length-1] || '—')
+  const correct = !!(predicted && predicted !== '—' && actual && predicted === actual)
   return (
     <Card title="Prediction vs Reality" accent="#4ea1ff">
       <div className="grid grid-cols-2 gap-2 text-center">

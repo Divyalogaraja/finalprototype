@@ -20,3 +20,51 @@ METRICS = [
 ]
 
 NOTE = "SIMULATED / EXPERIMENTAL RESULTS on synthetic demo data. Not a claim about real-world performance."
+
+# Mutable copy used by /api/evaluation/run so the dashboard reflects completed incidents.
+CURRENT = {"metrics": [dict(m) for m in METRICS], "note": NOTE, "runs": 0}
+
+
+def evaluation_snapshot():
+    return {"metrics": CURRENT["metrics"], "note": CURRENT["note"], "runs": CURRENT["runs"]}
+
+
+def reset_evaluation():
+    CURRENT["metrics"] = [dict(m) for m in METRICS]
+    CURRENT["note"] = NOTE
+    CURRENT["runs"] = 0
+    return evaluation_snapshot()
+
+
+def run_evaluation(incidents=None):
+    """Recompute a few dashboard metrics from logged simulated incidents. Still synthetic."""
+    incidents = incidents or []
+    n = len(incidents)
+    contained = 0
+    affected = []
+    for inc in incidents:
+        o = inc.get("actual_outcome") or inc.get("outcome") or {}
+        if isinstance(o, str):
+            o = {}
+        if (inc.get("approval_status") or "").upper() in ("CONTAINED", "RESOLVED") and (
+            inc.get("approved_action") not in (None, "no_action")
+        ):
+            contained += 1
+        aff = o.get("affected") if isinstance(o, dict) else None
+        if aff is not None:
+            affected.append(aff)
+    metrics = [dict(m) for m in METRICS]
+    if n:
+        contain_rate = round(100.0 * contained / max(1, n), 1)
+        avg_aff = round(sum(affected) / max(1, len(affected)), 2) if affected else 2.0
+        for m in metrics:
+            if m["metric"] == "Containment Rate":
+                m["rtx"] = contain_rate
+            elif m["metric"] == "Systems Affected":
+                m["rtx"] = avg_aff
+            elif m["metric"] == "Playbook Improvement":
+                m["rtx"] = 1.0 if any(inc.get("playbook_update") for inc in incidents) else 0.0
+    CURRENT["metrics"] = metrics
+    CURRENT["runs"] = CURRENT.get("runs", 0) + 1
+    CURRENT["note"] = NOTE + f" Last run used {n} simulated incident(s)."
+    return evaluation_snapshot()

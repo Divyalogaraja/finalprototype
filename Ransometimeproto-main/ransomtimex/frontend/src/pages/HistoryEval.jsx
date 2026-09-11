@@ -17,10 +17,12 @@ const TRENDS = Array.from({length:8}).map((_,i)=>({
 }))
 
 export default function HistoryEval({ go }) {
-  const { state } = useSim()
+  const { state, refresh } = useSim()
   const inc = state.incidents || []
   const evalData = state.evalData
   const avgRegret = inc.length ? Math.round(inc.reduce((a,x)=>a+(x.defense_regret||0),0)/inc.length) : 0
+
+  React.useEffect(() => { refresh('eval'); refresh('incidents') }, [])
 
   return (
     <div className="space-y-4">
@@ -44,8 +46,8 @@ export default function HistoryEval({ go }) {
               </tr></thead>
               <tbody>
                 {inc.map((r,i)=>{
-                  const affected = r.actual_outcome?.affected ?? (Array.isArray(r.affected_assets)?r.affected_assets.length:0)
-                  const imp = r.actual_outcome?.impact || '—'
+                  const affected = r.actual_outcome?.affected ?? r.outcome?.affected ?? (Array.isArray(r.affected_assets)?r.affected_assets.length:0)
+                  const imp = r.actual_outcome?.impact || r.outcome?.impact || '—'
                   return (
                     <tr key={r.id} className="border-t border-edge/40 align-top">
                       <td className="py-2 pr-3 mono font-bold text-white">{r.id}</td>
@@ -93,7 +95,7 @@ export default function HistoryEval({ go }) {
       </div>
 
       {/* Evaluation */}
-      <Evaluation evalData={evalData} />
+      <Evaluation evalData={evalData} refresh={refresh} />
     </div>
   )
 }
@@ -136,13 +138,21 @@ function AreaTrend(){
   )
 }
 
-function Evaluation({ evalData }) {
-  if (!evalData) return <Card><Empty icon={<FlaskConical size={26}/>} text="Evaluation metrics not loaded." /></Card>
+function Evaluation({ evalData, refresh }) {
+  const [busy, setBusy] = React.useState(false)
+  async function run() { setBusy(true); try { await refresh('eval-run') } finally { setBusy(false) } }
+  async function reset() { setBusy(true); try { await refresh('eval-reset') } finally { setBusy(false) } }
+  if (!evalData) return <Card><Empty icon={<FlaskConical size={26}/>} text="Evaluation metrics not loaded." />
+    <div className="text-center mt-2"><button onClick={run} className="chip bg-accent/20 text-accent">Run Evaluation</button></div></Card>
   const { metrics, note } = evalData
   const top = metrics.filter(m=>['Precision','Recall','F1 Score','False Positive Rate','Detection Latency'].includes(m.metric))
   return (
     <Card title="Evaluation — Rule-based baseline vs RansomTime-X" subtitle="Simulated / experimental comparison" accent="#a78bfa"
-      right={<span className="text-[9px] text-mut">SIMULATED RESULTS</span>}>
+      right={<div className="flex gap-1.5">
+        <button onClick={run} disabled={busy} className="chip bg-accent/20 text-accent hover:bg-accent/30 disabled:opacity-50">Run Evaluation</button>
+        <button onClick={reset} disabled={busy} className="chip bg-white/5 text-mut hover:text-white disabled:opacity-50">Reset</button>
+        <span className="text-[9px] text-mut self-center">SIMULATED RESULTS</span>
+      </div>}>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="h-72">
           <ResponsiveContainer>

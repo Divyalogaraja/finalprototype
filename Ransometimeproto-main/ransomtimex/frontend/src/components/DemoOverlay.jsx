@@ -17,7 +17,7 @@ const SCRIPT = [
   { t: '3:00', label: 'Playbook evolved', sub: 'A proposed update is ready for review.' },
 ]
 
-export default function DemoOverlay({ onClose, runNow }) {
+export default function DemoOverlay({ onClose, runNow, onAskAI }) {
   const sim = useSim()
   const [idx, setIdx] = useState(0)
   const [done, setDone] = useState(false)
@@ -77,7 +77,7 @@ export default function DemoOverlay({ onClose, runNow }) {
         ) : (
           <div className="flex justify-center gap-3">
             <button onClick={onClose} className="px-5 py-2.5 rounded-lg bg-accent text-white font-semibold text-sm hover:brightness-110">View Results</button>
-            <button onClick={() => sim.dispatch({ type: 'OPEN_APPROVAL' })}
+            <button onClick={() => { onClose(); onAskAI && onAskAI() }}
               className="flex items-center gap-1.5 px-5 py-2.5 rounded-lg panel-soft text-mut text-sm hover:text-white">
               <Bot size={15} /> Ask AI
             </button>

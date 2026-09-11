@@ -4,12 +4,17 @@ import { useSim } from '../store/SimContext'
 import { Card } from '../components/common'
 
 const PRESETS = [
-  'Why was this incident classified as ransomware?',
-  'What is the attacker likely to target next?',
-  'Why did you recommend isolation?',
-  'What would happen if we revoked credentials 30 seconds earlier?',
-  'What was the biggest missed intervention?',
-  'Why is this defense considered robust?',
+  'What is happening?',
+  'Why is this risky?',
+  'What evidence supports this?',
+  'What will the attacker target next?',
+  'What defense is recommended?',
+  'Why was this defense selected?',
+  'What is the blast radius?',
+  'What happens if the defense fails?',
+  'How did the attacker adapt?',
+  'What did the system learn?',
+  'Why was a playbook change proposed?',
   'Generate an incident report.',
 ]
 
@@ -62,6 +67,7 @@ export default function AIInvestigator() {
                     <div className="rounded-lg border border-accent/20 bg-panel-soft px-3 py-2 text-[13px] text-white/90 leading-relaxed whitespace-pre-wrap">{res.answer}</div>
                     {res.evidence?.length>0 && <div className="mt-2 text-[11px] text-mut flex items-start gap-1.5"><FileText size={12} className="mt-0.5 shrink-0 text-accent"/><span>{res.evidence.join(' · ')}</span></div>}
                     {res.source && <div className="mt-1 text-[10px] text-mut">Source: {res.source}</div>}
+                    {res.kind && <div className="mt-1 text-[10px] uppercase tracking-wide text-accent">{res.kind}</div>}
                   </div>
                 </div>
               )}

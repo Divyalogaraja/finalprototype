@@ -99,7 +99,7 @@ export default function App() {
         </main>
       </div>
       <ApprovalModal />
-      {demo && <DemoOverlay onClose={() => setDemo(false)} runNow={runNow} />}
+      {demo && <DemoOverlay onClose={() => setDemo(false)} onAskAI={() => { setDemo(false); setActive('investigator') }} runNow={runNow} />}
     </div>
   )
 }

@@ -91,7 +91,22 @@ function reducer(s, a) {
   switch (a.type) {
     case 'BOOT_OK': return { ...s, booting: false, scenarioMeta: a.meta, incidents: a.incidents }
     case 'BOOT_ERR': return { ...s, booting: false, error: a.msg }
-    case 'SET_ERROR': return { ...s, error: a.msg }
+    case 'SET_ERROR': return { ...s, error: a.msg, approveBusy: false, recommendLoading: false, aiThinking: false }
+    case 'LIVE_META': return { ...s, liveMeta: a.meta, livePhase: a.phase || 'running', liveIdx: -1, livePaused: false, liveDecision: null, liveSummary: null, liveAction: null, liveSimulated: {}, liveContained: false, scenarioId: a.meta?.scenario || s.scenarioId, recommend: null, missedImpact: null, counterfactual: null, phase: 'playing', statusText: 'DETECTING' }
+    case 'LIVE_SNAP': return { ...s, live: a.snapshot, liveIdx: a.index, livePaused: a.paused ?? s.livePaused, statusText: a.snapshot?.risk_level || s.statusText }
+    case 'LIVE_PHASE': return { ...s, livePhase: a.phase }
+    case 'LIVE_DECISION': return { ...s, liveDecision: a.payload, livePhase: 'decision', phase: 'decision', statusText: 'DECISION WINDOW', recommend: a.payload?.recommendation || s.recommend }
+    case 'LIVE_SIM': return { ...s, liveSimulated: { ...s.liveSimulated, [a.action]: a.branch } }
+    case 'LIVE_RESOLVED': return { ...s, livePhase: 'resolved', liveSummary: a.summary, liveAction: a.action, liveContained: !!a.contained, livePaused: false, live: a.snapshot || s.live, liveDecision: null, phase: 'resolved', statusText: a.contained ? 'CONTAINED' : 'RESOLVED', missedImpact: a.summary ? {
+      avoidable_systems: a.summary.avoidable_exposure, avoidable_exposure: a.summary.avoidable_exposure,
+      avoidable_downtime_h: 0, defense_regret: a.summary.defense_regret,
+      actual: { affected: a.summary.affected },
+      best_counterfactual: { affected: Math.max(1, (a.summary.no_action_affected || 0) - (a.summary.avoidable_exposure || 0)) },
+      note: 'SIMULATED ESTIMATE from the live run.',
+    } : s.missedImpact }
+    case 'LIVE_PAUSE': return { ...s, livePaused: !!a.paused }
+    case 'LIVE_SPEED': return { ...s, liveSpeed: a.speed }
+    case 'LIVE_RESET': return { ...s, liveMeta: null, liveIdx: -1, livePhase: 'idle', livePaused: false, liveDecision: null, liveSummary: null, liveAction: null, liveSimulated: {}, liveContained: false, live: a.snapshot || null, recommend: null, phase: 'idle', statusText: 'STANDBY', approvalOpen: false }
     case 'START': return {
       ...s, scenarioId: a.scenarioId, steps: a.steps, timeline: a.timeline,
       scenarioMeta: a.meta, curIndex: 0, curStop: decisionIndex(a.steps),
@@ -152,14 +167,6 @@ function reducer(s, a) {
     case 'DEMO_TICK': return { ...s, demoTick: a.tick }
     case 'RESET_SELECT': return { ...s, selectedNode: null }
     case 'LIVE_SCEN': return { ...s, liveScenarios: a.data }
-    case 'LIVE_META': return { ...s, liveMeta: a.meta, livePhase: a.phase || 'running', liveIdx: -1, livePaused: false, liveDecision: null, liveSummary: null, liveAction: null, liveSimulated: {}, liveContained: false }
-    case 'LIVE_SNAP': return { ...s, live: a.snapshot, liveIdx: a.index, livePaused: a.paused ?? s.livePaused }
-    case 'LIVE_PHASE': return { ...s, livePhase: a.phase }
-    case 'LIVE_DECISION': return { ...s, liveDecision: a.payload, livePhase: 'decision' }
-    case 'LIVE_SIM': return { ...s, liveSimulated: { ...s.liveSimulated, [a.action]: a.branch } }
-    case 'LIVE_RESOLVED': return { ...s, livePhase: 'resolved', liveSummary: a.summary, liveAction: a.action, liveContained: !!a.contained, livePaused: false, live: a.snapshot || s.live, liveDecision: null }
-    case 'LIVE_PAUSE': return { ...s, livePaused: !!a.paused }
-    case 'LIVE_SPEED': return { ...s, liveSpeed: a.speed }
     default: return s
   }
 }
@@ -274,8 +281,26 @@ export function SimProvider({ children }) {
 
   const askAI = useCallback(async (q) => {
     dispatch({ type: 'AI_THINK' })
-    try { const r = await api.ai(q); dispatch({ type: 'SET_AI', data: r }) }
-    catch (e) { dispatch({ type: 'SET_AI', data: { answer: 'AI service unavailable.', evidence: [] } }) }
+    try {
+      const r = await api.ai(q)
+      dispatch({ type: 'SET_AI', data: r })
+    } catch (e) {
+      try {
+        const r = await api.investigator(q)
+        dispatch({ type: 'SET_AI', data: r })
+      } catch (e2) {
+        const live = stateRef.current.live || {}
+        const rec = stateRef.current.recommend || {}
+        const pred = live.prediction || {}
+        const intent = live.intent || {}
+        dispatch({ type: 'SET_AI', data: {
+          answer: `[OBSERVED]\nDeterministic investigator (local fallback). Risk ${live.risk_level || 'LOW'} at ${live.risk_score || 0}. Stage: ${intent.stage || 'Observing'}. ${intent.sentence || ''}\n\n[PREDICTION]\nNext target ${pred.predicted || 'not yet predictable'} (${Math.round(pred.confidence || 0)}% confidence) — not an observed fact.\n\n[PROPOSED / REQUIRES HUMAN APPROVAL]\n${rec.recommended_label || 'Generate a defense recommendation first.'}`,
+          evidence: Object.keys(live.signal_counts || {}).filter(k => live.signal_counts[k]),
+          source: 'Local deterministic fallback (no LLM)',
+          kind: 'OBSERVED',
+        } })
+      }
+    }
   }, [])
 
   const loadDeep = useCallback(async (kind) => {
@@ -301,13 +326,17 @@ export function SimProvider({ children }) {
       if (what === 'memory') { const d = await api.memory(); dispatch({ type: 'MEMORY', data: d.memory || [] }) }
       if (what === 'audit') { const d = await api.audit(); const x = await api.decisions(); dispatch({ type: 'AUDIT', audit: d.audit || [], decisions: x.decisions || [] }) }
       if (what === 'eval') { const d = await api.evaluation(); dispatch({ type: 'EVAL', data: d }) }
+      if (what === 'eval-run') { const d = await api.evaluationRun(); dispatch({ type: 'EVAL', data: d }) }
+      if (what === 'eval-reset') { const d = await api.evaluationReset(); dispatch({ type: 'EVAL', data: d }) }
       if (what === 'falsepos') { const d = await api.falsePositive(); dispatch({ type: 'FALSEPOS', data: d }) }
       if (what === 'playbook') { const d = await api.playbook(); dispatch({ type: 'PLAYBOOK', data: d }) }
     } catch (e) { /* ignore */ }
   }, [])
 
   const proposePlaybook = useCallback(async () => {
-    const d = await api.playbookPropose(); dispatch({ type: 'PROPOSED', data: d })
+    try {
+      const d = await api.playbookPropose(); dispatch({ type: 'PROPOSED', data: d })
+    } catch (e) { dispatch({ type: 'SET_ERROR', msg: String(e?.message || e) }) }
   }, [])
 
   const approvePlaybook = useCallback(async () => {
@@ -413,14 +442,32 @@ export function SimProvider({ children }) {
       const r = await api.liveAct(action_id, decision)
       if (r && r.summary) dispatch({ type: 'LIVE_RESOLVED', summary: r.summary, action: r.action, contained: r.contained, snapshot: r.snapshot })
       ref.phase = 'resolved'
-    } catch (e) { /* ignore */ }
+      try {
+        const incidents = await api.incidents()
+        dispatch({ type: 'INCIDENTS', data: incidents.incidents || [] })
+        const memory = await api.memory(); const audit = await api.audit(); const decisions2 = await api.decisions()
+        dispatch({ type: 'MEMORY', memory: memory.memory || [] })
+        dispatch({ type: 'AUDIT', audit: audit.audit || [], decisions: decisions2.decisions || [] })
+        const pb = await api.playbook(); dispatch({ type: 'PLAYBOOK', data: pb })
+      } catch (e) { /* refresh is best-effort */ }
+    } catch (e) { dispatch({ type: 'SET_ERROR', msg: String(e?.message || e) }) }
+  }, [])
+
+  const resetLive = useCallback(async () => {
+    const ref = liveRef.current
+    if (ref.timer) { clearTimeout(ref.timer); ref.timer = null }
+    ref.busy = false; ref.paused = false; ref.phase = 'idle'
+    try { await api.liveReset() } catch (e) { /* still reset UI */ }
+    let snap = null
+    try { snap = await api.state() } catch (e) { snap = null }
+    dispatch({ type: 'LIVE_RESET', snapshot: snap })
   }, [])
 
   const value = {
     state, dispatch,
     startRun, resumePastDecision, recommendDecision, approve, askAI, loadDeep, refresh,
     proposePlaybook, approvePlaybook, rejectPlaybook, updateProfile, selectNode, STAGES,
-    startLive, pauseLive, stepLive, setLiveSpeed, simulateLive, decideLive,
+    startLive, pauseLive, stepLive, setLiveSpeed, simulateLive, decideLive, resetLive,
   }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

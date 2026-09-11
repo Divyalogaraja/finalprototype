@@ -32,6 +32,7 @@ export default function InterventionWindow({ go }) {
         <select value={sid} onChange={e=>setSid(e.target.value)} className="bg-[#0e1730] border border-edge rounded-md px-2 py-1 text-[12px]">
           <option value="S2">Scenario: Compromised Endpoint (S2)</option>
           <option value="S1">Scenario: Phishing Credential (S1)</option>
+          {state.liveMeta?.scenario && <option value={state.liveMeta.scenario}>Live run: {state.liveMeta.scenario}</option>}
         </select>
       </div>
 
@@ -99,7 +100,7 @@ export default function InterventionWindow({ go }) {
 }
 
 function Timeline({ points, lastSafe }) {
-  const lastSafeIdx = points.findIndex(x=>x.idx===lastSafe.idx)
+  const lastSafeIdx = lastSafe ? points.findIndex(x=>x.idx===lastSafe.idx) : Math.max(0, points.length-1)
   const pts = points.map(pt => ({ ...pt, color: CLASS_COLOR[pt.class] }))
   // marker position in percent along the event index range
   const markerPct = (lastSafeIdx / Math.max(1, points.length-1)) * 100

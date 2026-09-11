@@ -21,9 +21,9 @@ from scenarios import SCENARIOS, STAGE_OF_EVENT
 from engine import compute_step, fresh_assets, final_impact_estimate
 from outcome import compute_outcome, PROFILES
 from defense import recommend, adaptive_response
-from attribution import run_counterfactual, missed_impact, robustness_test, reachable_full, replay_scenario
+from attribution import run_counterfactual, missed_impact, robustness_test, reachable_full, replay_scenario, resolve_scenario
 from false_positive import CONTEXT_STEPS, BENIGN_ACTIVITIES
-from evaluation import METRICS, NOTE
+from evaluation import METRICS, NOTE, evaluation_snapshot, run_evaluation, reset_evaluation
 from ai_investigator import answer as ai_answer
 import graph as graphmod
 import live as livemod
@@ -95,6 +95,46 @@ def decision_posture():
     return s
 
 
+def _live_run():
+    return getattr(livemod, "RUN", None)
+
+
+def _sync_live(snap):
+    """Keep classic LIVE dict aligned with the dynamic live run so every page
+    (detection, graph, prediction, defense, investigator) reads one state."""
+    if not snap:
+        return
+    LIVE["current"] = dict(snap)
+    LIVE["status"] = snap.get("status") or LIVE.get("status") or "ACTIVE"
+    if snap.get("approved_action"):
+        LIVE["approved_action"] = snap.get("approved_action")
+    if snap.get("actual_outcome"):
+        LIVE["actual_outcome"] = snap.get("actual_outcome")
+    LIVE["contained"] = bool(snap.get("contained"))
+
+
+def _active_snapshot():
+    """Single source of truth: live run if present, else classic LIVE, else idle."""
+    run = _live_run()
+    if run and run.get("idx", -1) >= 0:
+        if run.get("phase") == "resolved" and run.get("_final_snap"):
+            snap = dict(run["_final_snap"])
+        else:
+            snap = livemod.snapshot_at(run, run["idx"])
+        snap["status"] = run.get("status") or snap.get("status") or "ACTIVE"
+        snap["incident_id"] = run.get("incident_id")
+        snap["live_phase"] = run.get("phase")
+        snap["scenario_id"] = run.get("scenario_id")
+        _sync_live(snap)
+        return snap
+    if LIVE["current"]:
+        return dict(LIVE["current"])
+    s = decision_posture()
+    LIVE["current"] = dict(s)
+    LIVE["scenario"] = LIVE.get("scenario") or "S2"
+    return s
+
+
 def idle_state():
     """Pre-simulation healthy graph & assets."""
     assets = fresh_assets()
@@ -149,6 +189,23 @@ class ProfileBody(BaseModel):
     access_level: str = "Analyst"
     last_login: str = ""
 
+class LiveStartBody(BaseModel):
+    scenario_id: str = "S-LAT"
+    reproducible: bool = True
+    intensity: float = 0.6
+
+class LiveActBody(BaseModel):
+    action_id: str = "isolate_revoke"
+    decision: str = "APPROVED"
+
+class LiveSimBody(BaseModel):
+    action_id: str = "no_action"
+    earlier: int = 0
+
+class AIBody(BaseModel):
+    question: str = ""
+    evidence: str = ""
+
 
 # ---------------- helpers ----------------
 def progression(scenario_id):
@@ -190,50 +247,60 @@ def sim_start(body: SimStart):
 
 @app.get("/api/state")
 def state():
-    if LIVE["current"]:
-        s = dict(LIVE["current"])
-        s["running"] = LIVE["running"]
-        s["status"] = LIVE["status"]
-        s["approved_action"] = LIVE["approved_action"]
-        s["actual_outcome"] = LIVE["actual_outcome"]
-        return s
-    # default ongoing decision posture for a rich first Command Center view
-    s = decision_posture()
-    LIVE["current"] = dict(s)
-    LIVE["scenario"] = "S2"
+    s = _active_snapshot()
+    s["running"] = LIVE["running"] or ((_live_run() or {}).get("phase") == "running")
+    s["status"] = LIVE.get("status") or s.get("status") or "STANDBY"
+    s["approved_action"] = LIVE.get("approved_action") or s.get("approved_action")
+    s["actual_outcome"] = LIVE.get("actual_outcome") or s.get("actual_outcome")
     return s
 
 
 @app.get("/api/assets")
 def assets_api():
-    st = LIVE["current"] or idle_state()
+    st = _active_snapshot()
     return {"assets": st["assets"]}
 
 
 @app.get("/api/attack-graph")
 def attack_graph():
-    st = LIVE["current"] or idle_state()
-    return st["graph"]
+    st = _active_snapshot()
+    return st.get("graph") or {}
 
 
 @app.get("/api/predictions")
 def predictions():
-    st = LIVE["current"] or idle_state()
-    return {"prediction": st["prediction"],
-            "blast_radius": st["blast_radius"],
-            "intent": st["intent"]}
+    st = _active_snapshot()
+    return {"prediction": st.get("prediction"),
+            "blast_radius": st.get("blast_radius"),
+            "intent": st.get("intent")}
 
 
 @app.get("/api/events")
 def events():
-    st = LIVE["current"] or idle_state()
+    st = _active_snapshot()
     return {"events": st.get("events_so_far", [])}
+
+
+@app.get("/api/detection/current")
+def detection_current():
+    st = _active_snapshot()
+    return {
+        "risk_score": st.get("risk_score", 0),
+        "risk_level": st.get("risk_level", "LOW"),
+        "signal_counts": st.get("signal_counts") or {},
+        "present": st.get("present") or {},
+        "intent": st.get("intent") or {},
+        "compromised": st.get("compromised") or [],
+        "events": st.get("events_so_far") or [],
+        "status": st.get("status") or LIVE.get("status"),
+        "simulated": True,
+    }
 
 
 # ---------------- defense ----------------
 @app.post("/api/defense/recommend")
-def recommend_api(body: DefenseBody):
-    st = LIVE["current"] or idle_state()
+def recommend_api(body: DefenseBody = DefenseBody()):
+    st = _active_snapshot()
     potential = (st.get("blast_radius") or {}).get("potential_affected_count") or 8
     risk_level = st.get("risk_level", "LOW")
     propagating = len(st.get("compromised", [])) > 1
@@ -243,9 +310,21 @@ def recommend_api(body: DefenseBody):
     return rec
 
 
+@app.get("/api/defense/review")
+def defense_review():
+    rec = LIVE.get("rec")
+    if not rec:
+        rec = recommend_api()
+    st = _active_snapshot()
+    return {"recommendation": rec, "state": {
+        "risk_score": st.get("risk_score"), "risk_level": st.get("risk_level"),
+        "compromised": st.get("compromised"), "prediction": st.get("prediction"),
+    }, "requires_human_approval": True}
+
+
 @app.post("/api/defense/simulate")
 def defense_simulate(body: DefenseBody):
-    st = LIVE["current"] or idle_state()
+    st = _active_snapshot()
     potential = (st.get("blast_radius") or {}).get("potential_affected_count") or 8
     return {"action_id": body.action_id,
             "outcome": compute_outcome(body.action_id, potential, 0.9),
@@ -254,7 +333,7 @@ def defense_simulate(body: DefenseBody):
 
 @app.post("/api/defense/approve")
 def defense_approve(body: ApproveBody):
-    st = LIVE["current"] or idle_state()
+    st = _active_snapshot()
     potential = (st.get("blast_radius") or {}).get("potential_affected_count") or 8
     touched_before = len(st.get("compromised", []))
     timing = 0.9
@@ -298,6 +377,13 @@ def defense_approve(body: ApproveBody):
     })
     return {"approved": body.decision, "action_id": body.action_id, "outcome": o,
             "state": contained}
+
+
+@app.post("/api/defense/reject")
+def defense_reject(body: ApproveBody = ApproveBody()):
+    body.decision = "REJECTED"
+    body.action_id = body.action_id or "no_action"
+    return defense_approve(body)
 
 
 # ---------------- replay / counterfactual ----------------
@@ -347,11 +433,13 @@ def playbook():
 @app.post("/api/incident/complete")
 def incident_complete(body: ApproveBody):
     sid = LIVE["scenario"] or "S2"
-    st = LIVE["current"] or idle_state()
-    potential = reachable_full(SCENARIOS[sid])
+    st = _active_snapshot()
+    sc = resolve_scenario(sid)
+    potential = reachable_full(sc) if getattr(sc, "events", None) else 8
     action = LIVE["approved_action"] or body.action_id or "isolate_revoke"
     o = LIVE["actual_outcome"] or compute_outcome(action, potential, 0.9)
-    miss = missed_impact("no_action", sid, len(SCENARIOS[sid].events) - 1)
+    last = max(0, len(getattr(sc, "events", []) or []) - 1)
+    miss = missed_impact("no_action", sid, last)
     iid = f"INC-{str(store.list_incidents().__len__() + 3).zfill(3)}"
     LIVE["incident_id"] = iid
     LIVE["defense_regret"] = miss["defense_regret"]
@@ -421,14 +509,36 @@ def profile():
 
 @app.post("/api/profile")
 def profile_update(body: ProfileBody):
-    p = store.save_profile(body.dict())
+    p = store.save_profile(body.model_dump() if hasattr(body, "model_dump") else body.dict())
     return p
 
 
 # ---------------- static dashboards ----------------
 @app.get("/api/evaluation")
 def evaluation():
-    return {"metrics": METRICS, "note": NOTE}
+    return evaluation_snapshot()
+
+
+@app.get("/api/evaluation/scenarios")
+def evaluation_scenarios():
+    return scenarios_api()
+
+
+@app.get("/api/evaluation/report")
+def evaluation_report():
+    snap = evaluation_snapshot()
+    inc = store.list_incidents()
+    return {**snap, "incidents": len(inc), "simulated": True}
+
+
+@app.post("/api/evaluation/run")
+def evaluation_run():
+    return run_evaluation(store.list_incidents())
+
+
+@app.post("/api/evaluation/reset")
+def evaluation_reset_api():
+    return reset_evaluation()
 
 
 @app.get("/api/false-positive")
@@ -436,34 +546,116 @@ def false_positive():
     return {"context_steps": CONTEXT_STEPS, "benign": BENIGN_ACTIVITIES}
 
 
-@app.get("/api/ai")
-def ai(question: str = "", evidence: str = ""):
-    st = LIVE["current"] or idle_state()
+def _ai_telemetry(st=None):
+    st = st or _active_snapshot()
     pred = st.get("prediction") or {}
-    tel = {
+    blast = st.get("blast_radius") or {}
+    intent = st.get("intent") or {}
+    rec = LIVE.get("rec") or {}
+    run = _live_run() or {}
+    signals = st.get("signal_counts") or {}
+    evidence = [s for s, c in signals.items() if c]
+    mem = store.memory()[:3]
+    mem_summary = "; ".join(
+        f"{m.get('pattern','?')} → {m.get('defense_used','?')} ({m.get('outcome','')})"
+        for m in mem
+    ) if mem else "No defense-memory entries yet for this session."
+    pb = store.current_playbook()
+    proposed = None
+    try:
+        vers = store.playbook_versions()
+        proposed = next((v for v in vers if (v.get("state") or "").upper() == "PROPOSED"), None)
+    except Exception:
+        proposed = None
+    adapt = st.get("adaptation_note") or ""
+    if LIVE.get("approved_action"):
+        adapt = adapt or adaptive_response(LIVE["approved_action"], fresh_assets()).get("response", "")
+    action = LIVE.get("approved_action") or rec.get("recommended") or "isolate_revoke"
+    return {
         "risk_score": st.get("risk_score", 0), "risk_level": st.get("risk_level", "LOW"),
         "prediction_confidence": (pred.get("confidence") if pred else st.get("risk_score", 0)),
-        "predicted_target": (pred.get("predicted") if pred else "FILE-SRV-01"),
-        "intent": (st.get("intent") or {}).get("sentence", "Observing"),
-        "recommended_label": PROFILES[(LIVE.get("approved_action") or "isolate_revoke")]["label"],
-        "evidence": [s for s, c in (st.get("signal_counts") or {}).items() if c > 0],
-        "blast_radius": (st.get("blast_radius") or {}).get("potential_affected_count", 0),
+        "predicted_target": (pred.get("predicted") if pred else None),
+        "intent": intent.get("sentence", "Observing"),
+        "stage": intent.get("stage", "Observing"),
+        "recommended_label": rec.get("recommended_label") or PROFILES.get(action, PROFILES["isolate_revoke"])["label"],
+        "recommended_id": rec.get("recommended") or action,
+        "defense_reason": rec.get("reason") or "minimum-disruption containment of endpoint and credentials",
+        "evidence": evidence,
+        "evidence_list": evidence,
+        "blast_radius": blast.get("potential_affected_count", 0),
+        "current_affected": blast.get("current_affected_count") or len(st.get("compromised") or []),
+        "critical_exposed": blast.get("critical_exposed_count", 0),
+        "compromised": st.get("compromised") or [],
+        "attacker_position": st.get("attacker_position"),
         "defense_regret": (LIVE["defense_regret"] if LIVE["defense_regret"] is not None else 0),
         "missed_impact": (LIVE["missed"] or {}).get("avoidable_impact", "HIGH"),
         "intervention_window": "10:04:37",
         "best_affected": (LIVE["missed"] or {}).get("best_counterfactual", {}).get("affected", 1),
-        "actual_affected": (LIVE["missed"] or {}).get("actual", {}).get("affected", 8),
+        "actual_affected": (LIVE["missed"] or {}).get("actual", {}).get("affected", blast.get("potential_affected_count", 8)),
         "robustness": "ROBUST",
-        "evidence_list": [],
-        "evidence_count": (st.get("signal_counts") or {}).get("mass_file_modification", 150),
-        "renames": (st.get("signal_counts") or {}).get("rapid_file_rename", 80),
-        "cred": (st.get("signal_counts") or {}).get("credential_access", 1),
-        "lat": (st.get("signal_counts") or {}).get("lateral_movement", 1),
-        "backup": (st.get("signal_counts") or {}).get("backup_access_attempt", 1),
+        "evidence_count": signals.get("mass_file_modification", 0),
+        "renames": signals.get("rapid_file_rename", 0),
+        "cred": signals.get("credential_access", 0),
+        "lat": signals.get("lateral_movement", 0),
+        "backup": signals.get("backup_access_attempt", 0),
+        "status": st.get("status") or LIVE.get("status") or "STANDBY",
+        "contained": bool(st.get("contained") or LIVE.get("contained")),
+        "approved_action": LIVE.get("approved_action") or st.get("approved_action"),
+        "playbook_rationale": (proposed or {}).get("rationale") or (pb or {}).get("rationale") or "",
+        "memory_summary": mem_summary,
+        "adaptation": adapt,
+        "event_count": len(st.get("events_so_far") or []),
+        "origin": (run.get("path") or [None])[0] or (st.get("compromised") or [None])[0],
     }
-    res = ai_answer(question, tel)
+
+
+def _ai_response(question: str):
+    try:
+        res = ai_answer(question, _ai_telemetry())
+    except Exception as e:
+        res = {"answer": f"[OBSERVED]\nInvestigator assembled a fallback from engine state. ({e})",
+               "evidence": [], "source": "Deterministic Investigator fallback"}
     res["question"] = question
     return res
+
+
+@app.get("/api/ai")
+def ai(question: str = "", evidence: str = ""):
+    return _ai_response(question)
+
+
+@app.post("/api/ai")
+def ai_post(body: AIBody = AIBody()):
+    return _ai_response(body.question or "")
+
+
+@app.get("/api/investigator")
+def investigator_get(question: str = ""):
+    return _ai_response(question)
+
+
+@app.post("/api/investigator")
+def investigator_post(body: AIBody = AIBody()):
+    return _ai_response(body.question or "")
+
+
+@app.get("/api/investigator/story")
+def investigator_story():
+    st = _active_snapshot()
+    intent = st.get("intent") or {}
+    events = st.get("events_so_far") or []
+    beats = [{"ts": e.get("timestamp"), "type": e.get("event_type"), "asset": e.get("asset")} for e in events]
+    return {"kind": "OBSERVED", "stage": intent.get("stage"), "sentence": intent.get("sentence"),
+            "beats": beats, "simulated": True}
+
+
+@app.get("/api/investigator/evidence")
+def investigator_evidence():
+    st = _active_snapshot()
+    signals = st.get("signal_counts") or {}
+    present = [k for k, v in signals.items() if v]
+    return {"kind": "OBSERVED", "signals": signals, "present": present,
+            "events": st.get("events_so_far") or [], "simulated": True}
 
 
 def _classify(seconds: int) -> str:
@@ -477,9 +669,9 @@ def _classify(seconds: int) -> str:
 @app.get("/api/intervention/{scenario_id}")
 def intervention(scenario_id: str = "S2"):
     from attribution import replay_scenario, _seconds, _touched_before
-    if scenario_id not in SCENARIOS:
-        return {"error": "unknown scenario"}
-    sc = SCENARIOS[scenario_id]
+    sc = resolve_scenario(scenario_id)
+    if not sc or not getattr(sc, "events", None):
+        return {"error": "unknown scenario", "points": [], "last_safe": None, "timeline": []}
     points = []
     for i in range(len(sc.events)):
         secs = _seconds(sc, i)
@@ -492,7 +684,6 @@ def intervention(scenario_id: str = "S2"):
             "isolate_revoke_affected": iso["affected"], "revoke_affected": rev["affected"],
             "noaction_affected": noa["affected"], "touched": _touched_before(sc, i),
         })
-    # last safe = last point not yet TOO LATE / RISKY where isolate still low
     last_safe = None
     for p in points:
         if p["class"] in ("SAFE", "BEST", "GOOD"):
@@ -557,7 +748,7 @@ def health():
 # =========================================================================
 
 def _run():
-    return livemod.RUN
+    return getattr(livemod, "RUN", None)
 
 
 @app.get("/api/live/scenarios")
@@ -571,11 +762,10 @@ def live_scenarios():
 
 
 @app.post("/api/live/start")
-def live_start(body: dict = None):
-    body = body or {}
-    sid = str(body.get("scenario_id", "S-LAT"))
-    rep = bool(body.get("reproducible", True))
-    intensity = float(body.get("intensity", 0.6))
+def live_start(body: LiveStartBody = LiveStartBody()):
+    sid = str(body.scenario_id or "S-LAT")
+    rep = bool(body.reproducible)
+    intensity = float(body.intensity or 0.6)
     run = livemod.generate_run(sid, reproducible=rep, intensity=intensity)
     run["incident_id"] = f"RXT-{str(len(store.list_incidents()) + 1).zfill(4)}"
     run["idx"] = -1
@@ -584,10 +774,32 @@ def live_start(body: dict = None):
     run["action"] = None
     run["decision"] = None
     livemod.RUN = run
+    LIVE["scenario"] = sid
+    LIVE["running"] = True
+    LIVE["status"] = "DETECTING"
+    LIVE["approved_action"] = None
+    LIVE["actual_outcome"] = None
+    LIVE["defense_regret"] = None
+    LIVE["missed"] = None
+    LIVE["contained"] = False
     return {"ok": True, "incident_id": run["incident_id"], "scenario": sid,
             "name": run["cfg"]["name"], "seed": run["seed"], "reproducible": rep,
             "path": run["path"], "origin": run["path"][0],
             "total": len(run["events"]), "decision_at": run["stop"]}
+
+
+@app.post("/api/live/reset")
+@app.post("/api/simulation/reset")
+def live_reset():
+    livemod.reset_run()
+    LIVE["current"] = idle_state()
+    LIVE["running"] = False
+    LIVE["status"] = "STANDBY"
+    LIVE["approved_action"] = None
+    LIVE["actual_outcome"] = None
+    LIVE["rec"] = None
+    LIVE["contained"] = False
+    return {"ok": True, "kind": "reset", "snapshot": LIVE["current"]}
 
 
 @app.get("/api/live/state")
@@ -601,12 +813,14 @@ def live_state():
     snap = livemod.snapshot_at(run, idx)
     snap["status"] = run.get("status", "ACTIVE")
     snap["incident_id"] = run["incident_id"]
+    _sync_live(snap)
     return {"ok": True, "kind": "state", "index": idx, "phase": run.get("phase"),
             "snapshot": snap, "incident_id": run["incident_id"]}
 
 
 @app.post("/api/live/advance")
-def live_advance(body: dict = None):
+@app.post("/api/simulation/next")
+def live_advance():
     """Generate & return the next event (backend source of truth)."""
     run = _run()
     if not run:
@@ -620,6 +834,9 @@ def live_advance(body: dict = None):
         snap = livemod.snapshot_at(run, idx)
         snap["status"] = "ACTIVE"
         snap["incident_id"] = run["incident_id"]
+        _sync_live(snap)
+        LIVE["running"] = True
+        LIVE["status"] = snap.get("risk_level") or "ACTIVE"
         return {"ok": True, "kind": "event", "index": idx,
                 "event": snap.get("event"), "snapshot": snap,
                 "incident_id": run["incident_id"],
@@ -633,41 +850,46 @@ def live_advance(body: dict = None):
     _persist_live_incident(run, run["stop"], action, run.get("decision") or "REJECTED", base, summary)
     run["phase"] = "resolved"
     run["_summary"] = summary
+    run["_final_snap"] = base
+    _sync_live(base)
+    LIVE["running"] = False
+    LIVE["status"] = "RESOLVED"
     return {"ok": True, "kind": "resolved", "summary": summary,
             "snapshot": base, "incident_id": run["incident_id"]}
 
 
 @app.post("/api/live/decision")
-def live_decision(body: dict = None):
+def live_decision():
     run = _run()
     if not run:
         return {"ok": False, "msg": "no live run"}
+    payload = livemod.decision_payload(run, run["stop"])
+    LIVE["rec"] = payload.get("recommendation")
+    _sync_live(payload.get("snapshot"))
     return {"ok": True, "kind": "decision",
-            "payload": livemod.decision_payload(run, run["stop"]),
+            "payload": payload,
             "incident_id": run["incident_id"]}
 
 
 @app.post("/api/live/simulate")
-def live_simulate(body: dict = None):
+def live_simulate(body: LiveSimBody = LiveSimBody()):
     """Counterfactual branch — never mutates the real run state."""
-    body = body or {}
     run = _run()
     if not run:
         return {"ok": False, "msg": "no live run"}
-    br = livemod.simulate_branch(run, run["stop"], str(body.get("action_id", "no_action")),
-                                 earlier=int(body.get("earlier", 0) or 0))
+    br = livemod.simulate_branch(run, run["stop"], str(body.action_id or "no_action"),
+                                 earlier=int(body.earlier or 0))
     return {"ok": True, "kind": "branch", "branch": br}
 
 
 @app.post("/api/live/act")
-def live_act(body: dict = None):
+def live_act(body: LiveActBody = LiveActBody()):
     """Human-in-the-loop simulated containment / no-action resolution."""
-    body = body or {}
     run = _run()
     if not run or run.get("phase") == "resolved":
         return {"ok": False, "msg": "no active run"}
-    action = str(body.get("action_id", "isolate_revoke") or "isolate_revoke")
-    decision = str(body.get("decision", "APPROVED") or "APPROVED")
+    action = str(body.action_id or "isolate_revoke")
+    decision = str(body.decision or "APPROVED")
     run["action"] = action
     run["decision"] = decision
     no_action = action == "no_action" or decision != "APPROVED"
@@ -682,6 +904,17 @@ def live_act(body: dict = None):
     _persist_live_incident(run, run["stop"], action, decision, final, summary)
     run["phase"] = "resolved"
     run["_summary"] = summary
+    run["_final_snap"] = final
+    _sync_live(final)
+    LIVE["running"] = False
+    LIVE["status"] = "CONTAINED" if not no_action else "RESOLVED"
+    LIVE["approved_action"] = action
+    LIVE["actual_outcome"] = final.get("actual_outcome")
+    try:
+        store.initial_playbook()
+        store.propose_update()
+    except Exception:
+        pass
     return {"ok": True, "kind": "resolved", "action": action, "decision": decision,
             "contained": not no_action, "summary": summary,
             "snapshot": final, "incident_id": run["incident_id"]}
@@ -726,19 +959,74 @@ def _persist_live_incident(run, stop, action, decision, final, summary):
     })
 
 
+# ---------------- learning / playbook / fork aliases ----------------
+@app.get("/api/learning/summary")
+def learning_summary():
+    mem = store.memory()
+    pb = store.current_playbook()
+    return {"kind": "LEARNED FROM SIMULATION", "memory_count": len(mem),
+            "playbook": pb, "incidents": len(store.list_incidents())}
+
+
+@app.get("/api/learning/history")
+def learning_history():
+    return {"kind": "LEARNED FROM SIMULATION", "incidents": store.list_incidents(),
+            "decisions": store.decisions()}
+
+
+@app.get("/api/learning/defense-memory")
+def learning_memory():
+    return {"kind": "LEARNED FROM SIMULATION", "memory": store.memory()}
+
+
+@app.get("/api/playbooks")
+@app.get("/api/playbooks/current")
+def playbooks_current():
+    store.initial_playbook()
+    return {"kind": "OBSERVED", "current": store.current_playbook(),
+            "versions": store.playbook_versions()}
+
+
+@app.get("/api/playbooks/proposals")
+def playbooks_proposals():
+    store.initial_playbook()
+    vers = store.playbook_versions()
+    proposed = [v for v in vers if (v.get("state") or "").upper() == "PROPOSED"]
+    return {"kind": "PROPOSED / REQUIRES HUMAN APPROVAL", "proposals": proposed}
+
+
+@app.get("/api/adaptation")
+def adaptation_api():
+    st = _active_snapshot()
+    action = LIVE.get("approved_action") or "isolate_revoke"
+    return {"kind": "SIMULATED ADAPTATION", "adaptive": adaptive_response(action, fresh_assets()),
+            "note": st.get("adaptation_note"), "simulated": True}
+
+
+@app.get("/api/simulation/forks")
+def simulation_forks():
+    sid = LIVE.get("scenario") or "S2"
+    idx = (_active_snapshot() or {}).get("event_index", 5)
+    try:
+        return {"kind": "PREDICTION", **run_counterfactual(sid, idx)}
+    except Exception as e:
+        return {"kind": "PREDICTION", "results": {}, "error": str(e)}
+
+
 # ---------------- static SPA hosting (production build) ----------------
 DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist")
 if os.path.isdir(DIST) and os.path.isfile(os.path.join(DIST, "index.html")):
     from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import JSONResponse
     _assets = os.path.join(DIST, "assets")
     if os.path.isdir(_assets):
         app.mount("/assets", StaticFiles(directory=_assets), name="assets")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):
-        # SPA fallback: serve real files if present, else index.html for client routes.
-        if full_path.startswith("api/") or full_path == "api":
-            return FileResponse(os.path.join(DIST, "index.html"))
+        # Never return HTML for API/WS misses — that caused "Unexpected token '<'".
+        if full_path.startswith("api/") or full_path == "api" or full_path.startswith("ws"):
+            return JSONResponse({"error": "not found", "path": "/" + full_path}, status_code=404)
         fp = os.path.join(DIST, full_path)
         if full_path and os.path.isfile(fp):
             return FileResponse(fp)

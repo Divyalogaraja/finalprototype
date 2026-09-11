@@ -212,6 +212,11 @@ def list_incidents():
             for k in ("affected_assets","outcome","best_counterfactual","playbook_update","payload"):
                 try: d[k] = json.loads(d[k])
                 except Exception: pass
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else {}
+            if payload:
+                d = {**d, **payload}
+            if not d.get("actual_outcome") and d.get("outcome"):
+                d["actual_outcome"] = d["outcome"]
             out.append(d)
         return out
 

@@ -8,6 +8,22 @@ from assets import build_assets
 from outcome import PROFILES, compute_outcome, timing_factor, action_options
 from graph import REACH
 
+
+def resolve_scenario(scenario_id: str):
+    """Static S1/S2 scenarios, or the current live run if its id is requested."""
+    if scenario_id in SCENARIOS:
+        return SCENARIOS[scenario_id]
+    try:
+        import live as livemod
+        run = getattr(livemod, "RUN", None)
+        if run and run.get("events") and scenario_id in (
+            run.get("scenario_id"), "live", "current", "S-LAT", "S-PHISH", "S-FAC", "S-INSIDER",
+        ):
+            return livemod.as_scenario(run)
+    except Exception:
+        pass
+    return SCENARIOS.get(scenario_id) or SCENARIOS["S2"]
+
 TIMELINE_SECONDS = {"10:01:00": 0, "10:02:00": 60, "10:03:00": 120, "10:04:00": 180,
                     "10:05:00": 240, "10:06:00": 300, "10:07:00": 360}
 
@@ -61,7 +77,7 @@ def reachable_full(scenario) -> int:
 
 
 def replay_scenario(scenario_id: str, action_id: str, intervention_idx: int) -> dict:
-    scenario = SCENARIOS[scenario_id]
+    scenario = resolve_scenario(scenario_id)
     path = _asset_path(scenario)
     potential = reachable_full(scenario)
     # how many systems are already touched at intervention point
@@ -90,7 +106,11 @@ def replay_scenario(scenario_id: str, action_id: str, intervention_idx: int) -> 
 
 def run_counterfactual(scenario_id: str, intervention_idx: int) -> dict:
     """All actions across a decision point + a sweep over earlier intervention points."""
-    scenario = SCENARIOS[scenario_id]
+    scenario = resolve_scenario(scenario_id)
+    if not scenario.events:
+        return {"scenario_id": scenario_id, "decision_point": 0, "decision_timestamp": "—",
+                "results": {}, "sweep": []}
+    intervention_idx = max(0, min(int(intervention_idx or 0), len(scenario.events) - 1))
     results = {}
     for action_id in PROFILES:
         r = replay_scenario(scenario_id, action_id, intervention_idx)
@@ -109,7 +129,9 @@ def run_counterfactual(scenario_id: str, intervention_idx: int) -> dict:
 
 
 def missed_impact(actual_action: str, scenario_id: str, intervention_idx: int) -> dict:
-    actual = replay_scenario(scenario_id, actual_action, len(SCENARIOS[scenario_id].events) - 1)["outcome"]
+    sc = resolve_scenario(scenario_id)
+    last = max(0, len(sc.events) - 1)
+    actual = replay_scenario(scenario_id, actual_action, last)["outcome"]
     # best feasible counterfactual = isolate_revoke at earliest safe window
     best = replay_scenario(scenario_id, "isolate_revoke", 0)["outcome"]
     avoidable_affected = actual["affected"] - best["affected"]

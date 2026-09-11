@@ -145,6 +145,25 @@ SCENARIOS = {
 }
 ORDER = ['S-LAT', 'S-PHISH', 'S-FAC', 'S-INSIDER']
 
+# Backend-authoritative live run. None until /api/live/start.
+RUN = None
+
+
+def as_scenario(run):
+    """Wrap the live event list as a Scenario-like object for replay/attribution."""
+    return type('Scenario', (), {
+        'id': run.get('scenario_id', 'S-LAT'),
+        'events': run.get('events') or [],
+        'initial': (run.get('path') or ['LAB-PC-21'])[0],
+        'name': (run.get('cfg') or {}).get('name', 'Live run'),
+    })()
+
+
+def reset_run():
+    global RUN
+    RUN = None
+    return True
+
 
 def pick_path(cfg, rng):
     return list(rng.choice(cfg['paths']))

@@ -17,7 +17,7 @@ export default function ApprovalModal() {
   const action = chosen || rec.recommended
   const approval = rec.approval_level || { level: 'HIGH', requirement: 'Mandatory human approval' }
   const sc = sevOf(approval.level)
-  const cand = rec.candidates.find(c => c.action_id === action)
+  const cand = (rec.candidates || []).find(c => c.action_id === action)
 
   async function simulateFirst() {
     setSimBusy(true); setSim(null)

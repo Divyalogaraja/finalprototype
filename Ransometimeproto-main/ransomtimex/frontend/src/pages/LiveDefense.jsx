@@ -58,8 +58,8 @@ export default function LiveDefense({ go }) {
         ) : (
           <button onClick={() => sim.pauseLive(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-warn/20 text-warn border border-warn/40 text-[12px] font-semibold hover:bg-warn/30"><Pause size={14}/> Pause</button>
         )}
-        <button onClick={() => sim.stepLive()} disabled={!running} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg panel-soft text-mut text-[12px] border border-edge disabled:opacity-40"><SkipForward size={14}/> Step Event</button>
-        <button onClick={() => { sim.pauseLive(false); dispatch({ type: 'LIVE_PHASE', phase: 'idle' }) }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg panel-soft text-mut text-[12px] border border-edge hover:text-white"><RotateCcw size={14}/> Reset</button>
+        <button onClick={() => sim.stepLive()} disabled={!(running || state.livePaused)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg panel-soft text-mut text-[12px] border border-edge disabled:opacity-40"><SkipForward size={14}/> Step Event</button>
+        <button onClick={() => sim.resetLive()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg panel-soft text-mut text-[12px] border border-edge hover:text-white"><RotateCcw size={14}/> Reset</button>
         <div className="ml-auto text-[10px] text-mut flex items-center gap-1"><FlaskConical size={11} className="text-ok"/> backend-generated · safe synthetic</div>
       </div>
 
