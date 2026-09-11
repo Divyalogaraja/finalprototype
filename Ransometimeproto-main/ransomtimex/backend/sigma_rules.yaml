@@ -1,0 +1,42 @@
+# Sigma-inspired synthetic detection rules (demo only — not operational detections)
+title: RansomTime-X Behavioral Ransomware Signals
+logsource:
+  category: process_creation
+detection:
+  selection_mass_write:
+    EventID: 11
+    OperationType: CreateFile
+    count: 150
+  selection_rapid_rename:
+    OperationType: FileRename
+    count: 80
+  selection_ps_encoded:
+    Image: powershell.exe
+    CommandLine|contains: ' -enc '
+  condition: selection_ps_encoded or (selection_mass_write and selection_rapid_rename)
+level: high
+
+---
+title: Credential Reuse Lateral Movement
+logsource:
+  category: authentication
+detection:
+  selection:
+    LogonType: 3
+    SourceHost: 10.20.1.21
+    TargetHost: 10.20.2.7
+  timeframe: 90s
+  condition: selection
+level: high
+
+---
+title: Backup Recovery Disruption Attempt
+logsource:
+  category: file_system
+detection:
+  selection:
+    AccessMask: 0x100000
+    Share: '\\10.20.20.10\Backup'
+  timeframe: 60s
+  condition: selection
+level: critical
