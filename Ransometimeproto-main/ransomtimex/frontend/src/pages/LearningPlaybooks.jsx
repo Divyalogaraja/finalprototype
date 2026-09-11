@@ -28,6 +28,7 @@ export default function LearningPlaybooks() {
   }
 
   const current = pb?.current
+  const memory = Array.isArray(state.memory) ? state.memory : []
 
   return (
     <div className="space-y-4">
@@ -35,10 +36,10 @@ export default function LearningPlaybooks() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card title="Defense Memory" subtitle="Organizational learning — patterns that repeat"
           accent="#a78bfa"
-          right={<span className="chip bg-accent/15 text-accent">{state.memory.length} remembered</span>}>
-          {state.memory.length===0 ? <Empty icon={<BookOpen size={26}/>} text="Complete an incident to record its defense memory." /> :
+          right={<span className="chip bg-accent/15 text-accent">{memory.length} remembered</span>}>
+          {memory.length===0 ? <Empty icon={<BookOpen size={26}/>} text="Complete an incident to record its defense memory." /> :
             <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-              {state.memory.map((m,i)=>(
+              {memory.map((m,i)=>(
                 <div key={i} className="rounded-lg panel-soft p-2.5">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="text-mut uppercase tracking-wide">Pattern</span>

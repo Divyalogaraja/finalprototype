@@ -103,7 +103,8 @@ function PredictionVsReality() {
   const live = state.live || {}
   const predicted = live.prediction?.predicted || '—'
   const confidence = live.prediction?.confidence || 0
-  const actual = live.compromised?.includes(predicted) ? predicted : (live.attacker_position || live.compromised?.[live.compromised.length-1] || '—')
+  const compromised = live.compromised || []
+  const actual = compromised.includes(predicted) ? predicted : (live.attacker_position || compromised[compromised.length-1] || '—')
   const correct = !!(predicted && predicted !== '—' && actual && predicted === actual)
   return (
     <Card title="Prediction vs Reality" accent="#4ea1ff">

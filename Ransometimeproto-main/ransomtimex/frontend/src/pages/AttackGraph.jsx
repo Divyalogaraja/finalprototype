@@ -49,7 +49,8 @@ const nodeTypes = { asset: AssetNode }
 
 export default function AttackGraph() {
   const { state, selectNode, dispatch } = useSim()
-  const graph = state.live?.graph || { nodes: [], edges: [] }
+  const rawGraph = state.live?.graph || {}
+  const graph = { ...rawGraph, nodes: rawGraph.nodes || [], edges: rawGraph.edges || [] }
   const assets = state.live?.assets || {}
   const [filter, setFilter] = useState(null)
 
@@ -143,8 +144,9 @@ export default function AttackGraph() {
 function NodeDetail({ node, asset }) {
   const { state } = useSim()
   const neighbors = []
-  const graph = state.live?.graph || { edges: [] }
-  graph.edges.filter(e=>e.source===node.id||e.target===node.id).forEach(e=>neighbors.push(e.source===node.id?e.target:e.source))
+  const graph = state.live?.graph || {}
+  const edges = graph.edges || []
+  edges.filter(e=>e.source===node.id||e.target===node.id).forEach(e=>neighbors.push(e.source===node.id?e.target:e.source))
   return (
     <div>
       <div className="flex items-center justify-between">

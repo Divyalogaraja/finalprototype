@@ -28,8 +28,9 @@ export default function CounterfactualReplay({ go }) {
 
   useEffect(() => {
     api.intervention(state.scenarioId || 'S2').then(d => {
-      setInterventionPts(d.points || [])
-      const ls = d.last_safe ? d.points.findIndex(p=>p.idx===d.last_safe.idx) : d.points.length-1
+      const pts = Array.isArray(d?.points) ? d.points : []
+      setInterventionPts(pts)
+      const ls = d?.last_safe ? pts.findIndex(p=>p.idx===d.last_safe.idx) : pts.length-1
       setIdx(ls >= 0 ? ls : 0)
     })
   }, [state.scenarioId])

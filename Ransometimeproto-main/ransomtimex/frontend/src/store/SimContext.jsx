@@ -67,12 +67,49 @@ const initial = {
   liveScenarios: null,
 }
 
+function asArray(v) {
+  return Array.isArray(v) ? v : []
+}
+
+function asObject(v) {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+}
+
+/** Keep live snapshots aligned with /api/state (compute_step / idle_state). */
+function normalizeLive(snap) {
+  if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return snap || null
+  const graph = asObject(snap.graph)
+  const blast = asObject(snap.blast_radius)
+  const pred = asObject(snap.prediction)
+  const intent = asObject(snap.intent)
+  return {
+    ...snap,
+    events_so_far: asArray(snap.events_so_far),
+    compromised: asArray(snap.compromised),
+    timeline: asArray(snap.timeline),
+    assets: asObject(snap.assets),
+    graph: { ...graph, nodes: asArray(graph.nodes), edges: asArray(graph.edges), exposed: asArray(graph.exposed) },
+    blast_radius: {
+      ...blast,
+      current_affected: asArray(blast.current_affected),
+      potential_affected: asArray(blast.potential_affected),
+    },
+    prediction: snap.prediction && typeof snap.prediction === 'object'
+      ? { ...pred, ranking: asArray(pred.ranking) }
+      : snap.prediction,
+    intent: { ...intent, evidence: asArray(intent.evidence) },
+    signal_counts: asObject(snap.signal_counts),
+    present: asObject(snap.present),
+  }
+}
+
 function decisionIndex(steps) {
-  for (let i = 0; i < steps.length; i++) {
-    const et = steps[i]?.event?.event_type
+  const list = asArray(steps)
+  for (let i = 0; i < list.length; i++) {
+    const et = list[i]?.event?.event_type
     if (et === 'lateral_movement' || et === 'file_server_access') return i
   }
-  return Math.max(0, steps.length - 2)
+  return Math.max(0, list.length - 2)
 }
 
 // Find a pending (not-yet-approved) playbook proposal in version history.
@@ -89,15 +126,15 @@ function pendingProposal(pb) {
 
 function reducer(s, a) {
   switch (a.type) {
-    case 'BOOT_OK': return { ...s, booting: false, scenarioMeta: a.meta, incidents: a.incidents }
+    case 'BOOT_OK': return { ...s, booting: false, scenarioMeta: a.meta, incidents: asArray(a.incidents) }
     case 'BOOT_ERR': return { ...s, booting: false, error: a.msg }
     case 'SET_ERROR': return { ...s, error: a.msg, approveBusy: false, recommendLoading: false, aiThinking: false }
     case 'LIVE_META': return { ...s, liveMeta: a.meta, livePhase: a.phase || 'running', liveIdx: -1, livePaused: false, liveDecision: null, liveSummary: null, liveAction: null, liveSimulated: {}, liveContained: false, scenarioId: a.meta?.scenario || s.scenarioId, recommend: null, missedImpact: null, counterfactual: null, phase: 'playing', statusText: 'DETECTING' }
-    case 'LIVE_SNAP': return { ...s, live: a.snapshot, liveIdx: a.index, livePaused: a.paused ?? s.livePaused, statusText: a.snapshot?.risk_level || s.statusText }
+    case 'LIVE_SNAP': return { ...s, live: normalizeLive(a.snapshot), liveIdx: a.index, livePaused: a.paused ?? s.livePaused, statusText: a.snapshot?.risk_level || s.statusText }
     case 'LIVE_PHASE': return { ...s, livePhase: a.phase }
     case 'LIVE_DECISION': return { ...s, liveDecision: a.payload, livePhase: 'decision', phase: 'decision', statusText: 'DECISION WINDOW', recommend: a.payload?.recommendation || s.recommend }
     case 'LIVE_SIM': return { ...s, liveSimulated: { ...s.liveSimulated, [a.action]: a.branch } }
-    case 'LIVE_RESOLVED': return { ...s, livePhase: 'resolved', liveSummary: a.summary, liveAction: a.action, liveContained: !!a.contained, livePaused: false, live: a.snapshot || s.live, liveDecision: null, phase: 'resolved', statusText: a.contained ? 'CONTAINED' : 'RESOLVED', missedImpact: a.summary ? {
+    case 'LIVE_RESOLVED': return { ...s, livePhase: 'resolved', liveSummary: a.summary, liveAction: a.action, liveContained: !!a.contained, livePaused: false, live: a.snapshot ? normalizeLive(a.snapshot) : s.live, liveDecision: null, phase: 'resolved', statusText: a.contained ? 'CONTAINED' : 'RESOLVED', missedImpact: a.summary ? {
       avoidable_systems: a.summary.avoidable_exposure, avoidable_exposure: a.summary.avoidable_exposure,
       avoidable_downtime_h: 0, defense_regret: a.summary.defense_regret,
       actual: { affected: a.summary.affected },
@@ -106,17 +143,20 @@ function reducer(s, a) {
     } : s.missedImpact }
     case 'LIVE_PAUSE': return { ...s, livePaused: !!a.paused }
     case 'LIVE_SPEED': return { ...s, liveSpeed: a.speed }
-    case 'LIVE_RESET': return { ...s, liveMeta: null, liveIdx: -1, livePhase: 'idle', livePaused: false, liveDecision: null, liveSummary: null, liveAction: null, liveSimulated: {}, liveContained: false, live: a.snapshot || null, recommend: null, phase: 'idle', statusText: 'STANDBY', approvalOpen: false }
-    case 'START': return {
-      ...s, scenarioId: a.scenarioId, steps: a.steps, timeline: a.timeline,
-      scenarioMeta: a.meta, curIndex: 0, curStop: decisionIndex(a.steps),
-      phase: 'playing', speed: a.speed, live: a.steps[0],
-      statusText: 'DETECTING', approvalOpen: false, approvedAction: null,
-      actualOutcome: null, contained: false, missedImpact: null, robust: null,
-      counterfactual: null, replay: null, recommend: null, proposeUpdate: null,
+    case 'LIVE_RESET': return { ...s, liveMeta: null, liveIdx: -1, livePhase: 'idle', livePaused: false, liveDecision: null, liveSummary: null, liveAction: null, liveSimulated: {}, liveContained: false, live: a.snapshot ? normalizeLive(a.snapshot) : null, recommend: null, phase: 'idle', statusText: 'STANDBY', approvalOpen: false }
+    case 'START': {
+      const steps = asArray(a.steps).map(st => normalizeLive(st) || st)
+      return {
+        ...s, scenarioId: a.scenarioId, steps, timeline: asArray(a.timeline),
+        scenarioMeta: a.meta, curIndex: 0, curStop: decisionIndex(steps),
+        phase: 'playing', speed: a.speed, live: steps[0] || null,
+        statusText: 'DETECTING', approvalOpen: false, approvedAction: null,
+        actualOutcome: null, contained: false, missedImpact: null, robust: null,
+        counterfactual: null, replay: null, recommend: null, proposeUpdate: null,
+      }
     }
     case 'STEP': {
-      const idx = Math.min(a.idx, s.steps.length - 1)
+      const idx = Math.min(a.idx, asArray(s.steps).length - 1)
       const live = s.steps[idx]
       let phase = s.phase
       let statusText = live ? live.risk_level : s.statusText
@@ -136,30 +176,33 @@ function reducer(s, a) {
     case 'REC_ERR': return { ...s, recommendLoading: false, error: a.msg }
     case 'APPROVE_OK': return {
       ...s, approvalOpen: false, approveBusy: false, approvedAction: a.action,
-      actualOutcome: a.outcome, live: a.state, contained: a.decision !== 'REJECTED',
+      actualOutcome: a.outcome, live: a.state ? normalizeLive(a.state) : s.live, contained: a.decision !== 'REJECTED',
       phase: a.decision === 'REJECTED' ? 'decision' : 'resolved',
       statusText: a.decision === 'REJECTED' ? 'ESCALATION' : 'CONTAINED',
     }
     case 'APPROVE_BUSY': return { ...s, approveBusy: true }
     case 'COMPLETE': return {
       ...s, missedImpact: a.missed, proposedUpdate: a.proposal,
-      statusText: 'RESOLVED', phase: 'resolved', incidents: a.incidents,
+      statusText: 'RESOLVED', phase: 'resolved', incidents: asArray(a.incidents),
     }
     case 'SET_COUNTERFACTUAL': return { ...s, counterfactual: a.data }
     case 'SET_REPLAY': return { ...s, replay: a.data }
     case 'SET_ROBUST': return { ...s, robust: a.data }
     case 'SET_AI': return { ...s, aiResult: a.data, aiThinking: false }
     case 'AI_THINK': return { ...s, aiThinking: true }
-    case 'MEMORY': return { ...s, memory: a.data }
-    case 'AUDIT': return { ...s, audit: a.data, decisions: a.decisions }
-    case 'EVAL': return { ...s, evalData: a.data }
-    case 'FALSEPOS': return { ...s, falsePos: a.data }
+    case 'MEMORY': return { ...s, memory: asArray(a.data !== undefined ? a.data : a.memory) }
+    case 'AUDIT': return { ...s, audit: asArray(a.audit !== undefined ? a.audit : a.data), decisions: asArray(a.decisions) }
+    case 'EVAL': return { ...s, evalData: a.data && typeof a.data === 'object' ? { ...a.data, metrics: asArray(a.data.metrics) } : a.data }
+    case 'FALSEPOS': return { ...s, falsePos: a.data && typeof a.data === 'object' ? { ...a.data, context_steps: asArray(a.data.context_steps), benign: asArray(a.data.benign) } : a.data }
     // Derive the pending proposal from version history so it survives reloads.
-    case 'PLAYBOOK': return { ...s, playbook: a.data, proposedUpdate: pendingProposal(a.data) }
+    case 'PLAYBOOK': {
+      const data = a.data !== undefined ? a.data : a.playbook
+      return { ...s, playbook: data, proposedUpdate: pendingProposal(data) }
+    }
     case 'PROFILE': return { ...s, profile: a.data }
     case 'PROPOSED': return { ...s, proposedUpdate: a.data }
-    case 'PLAYBOOK_APPROVED': return { ...s, playbook: a.data, proposedUpdate: null }
-    case 'INCIDENTS': return { ...s, incidents: a.data }
+    case 'PLAYBOOK_APPROVED': return { ...s, playbook: a.data !== undefined ? a.data : a.playbook, proposedUpdate: null }
+    case 'INCIDENTS': return { ...s, incidents: asArray(a.data !== undefined ? a.data : a.incidents) }
     case 'SELECT_NODE': return { ...s, selectedNode: a.node }
     case 'LOOP': return { ...s, activeLoop: a.i, activeStage: STAGES[a.i] }
     case 'DEMO_ON': return { ...s, demo: true }
@@ -189,8 +232,8 @@ export function SimProvider({ children }) {
           curStop: 0, phase: 'decision', speed: 700, live: state0, meta: null })
         dispatch({ type: 'BOOT_OK', meta, incidents: incidents.incidents || [] })
         dispatch({ type: 'AUDIT', audit: audit.audit || [], decisions: decisions.decisions || [] })
-        dispatch({ type: 'MEMORY', memory: memory.memory || [] })
-        dispatch({ type: 'PLAYBOOK', playbook })
+        dispatch({ type: 'MEMORY', data: memory.memory || [] })
+        dispatch({ type: 'PLAYBOOK', data: playbook })
         dispatch({ type: 'PROFILE', data: profile })
       } catch (e) {
         dispatch({ type: 'BOOT_ERR', msg: String(e?.message || e) })
@@ -235,7 +278,7 @@ export function SimProvider({ children }) {
       dispatch({ type: 'SET_ERROR', msg: null })
       const data = await api.startSim(scenarioId, speed)
       const meta = (await api.scenarios()).scenarios[scenarioId]
-      dispatch({ type: 'START', scenarioId, steps: data.steps, timeline: data.timeline,
+      dispatch({ type: 'START', scenarioId, steps: Array.isArray(data.steps) ? data.steps : [], timeline: Array.isArray(data.timeline) ? data.timeline : [],
         curStop: decisionIndex(data.steps), speed, meta })
     } catch (e) {
       dispatch({ type: 'SET_ERROR', msg: String(e?.message || e) })
@@ -271,7 +314,7 @@ export function SimProvider({ children }) {
           incidents: incidents.incidents || [] })
         const memory = await api.memory(); const audit = await api.audit()
         const decisions2 = await api.decisions()
-        dispatch({ type: 'MEMORY', memory: memory.memory || [] })
+        dispatch({ type: 'MEMORY', data: memory.memory || [] })
         dispatch({ type: 'AUDIT', audit: audit.audit || [], decisions: decisions2.decisions || [] })
       }
     } catch (e) {
@@ -446,7 +489,7 @@ export function SimProvider({ children }) {
         const incidents = await api.incidents()
         dispatch({ type: 'INCIDENTS', data: incidents.incidents || [] })
         const memory = await api.memory(); const audit = await api.audit(); const decisions2 = await api.decisions()
-        dispatch({ type: 'MEMORY', memory: memory.memory || [] })
+        dispatch({ type: 'MEMORY', data: memory.memory || [] })
         dispatch({ type: 'AUDIT', audit: audit.audit || [], decisions: decisions2.decisions || [] })
         const pb = await api.playbook(); dispatch({ type: 'PLAYBOOK', data: pb })
       } catch (e) { /* refresh is best-effort */ }

@@ -213,6 +213,7 @@ function LogRow({ e, active, onClick }) {
 }
 function LogDetail({ e, onClose, go }) {
   const sc = sevOf(e.severity)
+  const evidence = Array.isArray(e.evidence) ? e.evidence : []
   return (
     <div className="rounded-lg border border-edge/70 bg-[#0b1222] p-3 fade-in">
       <div className="flex items-center justify-between mb-1"><span className="text-[11px] font-bold uppercase tracking-wide text-white">Event Detail</span><button onClick={onClose} className="text-mut hover:text-white"><X size={14}/></button></div>
@@ -231,9 +232,9 @@ function LogDetail({ e, onClose, go }) {
       </div>
       <div className="mt-2 rounded-md bg-info/5 border border-info/25 p-2">
         <div className="text-[10px] font-bold text-info mb-0.5">Why it matters</div>
-        <p className="text-[11px] text-mut leading-snug">Previous {e.evidence.length ? e.evidence.slice(0, 3).join(', ').toLowerCase() : 'suspicious activity'} increase confidence this belongs to the same chain as the compromised {e.source || e.device}.</p>
+        <p className="text-[11px] text-mut leading-snug">Previous {evidence.length ? evidence.slice(0, 3).join(', ').toLowerCase() : 'suspicious activity'} increase confidence this belongs to the same chain as the compromised {e.source || e.device}.</p>
       </div>
-      {e.evidence.length > 0 && <div className="mt-2"><div className="text-[10px] uppercase text-mut mb-1">Evidence</div><div className="flex flex-wrap gap-1">{e.evidence.map((x, i) => <span key={i} className="chip bg-white/5 text-[10px] text-mut">• {x}</span>)}</div></div>}
+      {evidence.length > 0 && <div className="mt-2"><div className="text-[10px] uppercase text-mut mb-1">Evidence</div><div className="flex flex-wrap gap-1">{evidence.map((x, i) => <span key={i} className="chip bg-white/5 text-[10px] text-mut">• {x}</span>)}</div></div>}
       <button onClick={() => go('graph')} className="mt-3 w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-accent/15 border border-accent/40 text-accent text-[12px] font-semibold hover:bg-accent/25"><Network size={13}/> View in Attack Graph</button>
     </div>
   )

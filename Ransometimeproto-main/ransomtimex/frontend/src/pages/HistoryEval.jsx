@@ -144,7 +144,8 @@ function Evaluation({ evalData, refresh }) {
   async function reset() { setBusy(true); try { await refresh('eval-reset') } finally { setBusy(false) } }
   if (!evalData) return <Card><Empty icon={<FlaskConical size={26}/>} text="Evaluation metrics not loaded." />
     <div className="text-center mt-2"><button onClick={run} className="chip bg-accent/20 text-accent">Run Evaluation</button></div></Card>
-  const { metrics, note } = evalData
+  const { metrics: rawMetrics, note } = evalData
+  const metrics = Array.isArray(rawMetrics) ? rawMetrics : []
   const top = metrics.filter(m=>['Precision','Recall','F1 Score','False Positive Rate','Detection Latency'].includes(m.metric))
   return (
     <Card title="Evaluation — Rule-based baseline vs RansomTime-X" subtitle="Simulated / experimental comparison" accent="#a78bfa"
